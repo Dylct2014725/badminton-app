@@ -16,12 +16,21 @@ st.set_page_config(page_title="羽球管家 Pro", page_icon="🏸", layout="wide
 # --- Google Sheets 初始化連線 ---
 def init_gsheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    # 確保 key.json 檔案跟 .py 檔在同一個資料夾
-    creds = ServiceAccountCredentials.from_json_keyfile_name("key.json", scope)
+    
+    # 優先從 Streamlit Secrets 讀取 (雲端環境)
+    if "gcp_service_account" in st.secrets:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        # 處理私鑰中的換行符號
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    # 如果沒有 Secrets，則找本地檔案 (電腦環境)
+    elif os.path.exists("key.json"):
+        creds = ServiceAccountCredentials.from_json_keyfile_name("key.json", scope)
+    else:
+        raise FileNotFoundError("找不到任何 Google Sheets 認證資訊（Secrets 或 key.json）")
+        
     client = gspread.authorize(creds)
-    # 打開你在 Google Drive 建立的試算表名稱
     return client.open("Badminton_Data")
-
 def get_base64_of_bin_file(bin_file):
     if os.path.exists(bin_file):
         with open(bin_file, 'rb') as f:
@@ -90,7 +99,14 @@ def load_data():
             data_rec = wks_rec.get_all_records()
             if data_rec:
                 df_rec = pd.DataFrame(data_rec)
-                # 轉換日期格式
+                
+                # --- 新增這幾行：強制轉數字 ---
+                numeric_cols = ['場租', '用球', '單球單價', '總收入', '總支出', '損益', '人數']
+                for col in numeric_cols:
+                    if col in df_rec.columns:
+                        df_rec[col] = pd.to_numeric(df_rec[col], errors='coerce').fillna(0)
+                # ---------------------------
+
                 df_rec['日期'] = pd.to_datetime(df_rec['日期']).dt.normalize()
                 st.session_state.records = df_rec.to_dict('records')
             else:
@@ -185,6 +201,9 @@ page = st.sidebar.radio("功能導覽", ["📊 財務概覽", "📝 快速記帳
 
 # --- 5. 頁面邏輯 ---
 if page == "📊 財務概覽":
+    st.write(f"目前資料庫總筆數: {len(st.session_state.records)}")
+    if st.session_state.records:
+        st.write("最新一筆日期:", st.session_state.records[-1]['日期'])
     df = pd.DataFrame(st.session_state.records) if st.session_state.records else pd.DataFrame(columns=['日期', '總支出', '總收入', '損益', '地點', '人數', '場租', '用球', '單球單價'])
     
     col_title, col_mode = st.columns([2, 1])
@@ -195,15 +214,23 @@ if page == "📊 財務概覽":
 
     if v_mode == "月":
         if not df.empty:
+            # 確保日期格式統一
             df['日期'] = pd.to_datetime(df['日期'])
+            # 取得不重複的月份清單
             month_list = sorted(df['日期'].dt.strftime('%Y-%m').unique(), reverse=True)
-            sel_month = st.selectbox("選擇月份", month_list)
-            m_df = df[df['日期'].dt.strftime('%Y-%m') == sel_month]
+        
+            if month_list:
+                sel_month = st.selectbox("選擇月份", month_list)
+                # 使用字串包含的方式過濾，最保險
+                m_df = df[df['日期'].dt.strftime('%Y-%m') == sel_month].copy()
+            else:
+                m_df = pd.DataFrame()
         else:
             m_df = pd.DataFrame()
 
-        t_exp = m_df['總支出'].sum() if not m_df.empty else 0
-        t_inc = m_df['總收入'].sum() if not m_df.empty else 0
+        # 計算總額時，確保資料型態是數字 (避免從 Sheets 抓下來變成字串)
+        t_exp = pd.to_numeric(m_df['總支出']).sum() if not m_df.empty else 0
+        t_inc = pd.to_numeric(m_df['總收入']).sum() if not m_df.empty else 0
         balance = t_inc - t_exp
 
         c_left, c_chart, c_right = st.columns([1, 2, 1])

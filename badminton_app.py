@@ -20,9 +20,18 @@ def init_gsheets():
     # 優先從 Streamlit Secrets 讀取 (雲端環境)
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
-        # 處理私鑰中的換行符號
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        
+        # --- 核心修正：確保私鑰字串純淨 ---
+        # 1. 處理換行符號
+        # 2. .strip() 移除頭尾看不見的空白或換行 (解決 65 字元報錯的關鍵)
+        # 3. .replace('"', '') 避免多餘的雙引號被當成內容
+        raw_key = creds_dict["private_key"]
+        clean_key = raw_key.replace("\\n", "\n").strip().strip('"')
+        creds_dict["private_key"] = clean_key
+        # ------------------------------
+        
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        
     # 如果沒有 Secrets，則找本地檔案 (電腦環境)
     elif os.path.exists("key.json"):
         creds = ServiceAccountCredentials.from_json_keyfile_name("key.json", scope)
@@ -545,3 +554,4 @@ elif page == "📜 歷史數據":
         st.download_button("📥 下載完整數據 CSV", data=csv, file_name="badminton_records.csv", mime="text/csv")
     else:
         st.info("暫無紀錄")
+
